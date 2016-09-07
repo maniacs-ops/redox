@@ -11,7 +11,7 @@ QEMU?=qemu-system-$(ARCH)
 CARGO=CARGO_TARGET_DIR=build RUSTC="./rustc-$(ARCH).sh" cargo rustc
 CARGOFLAGS=--verbose --target=$(ARCH)-unknown-redox.json -- --cfg redox \
 	-L $(BUILD) \
-	-C no-prepopulate-passes -C no-stack-check -C opt-level=3 \
+	-C panic=abort -C no-prepopulate-passes -C no-stack-check -C opt-level=3 \
 	-Z no-landing-pads \
 	-A dead_code
 RUSTC=RUST_BACKTRACE=1 rustc
