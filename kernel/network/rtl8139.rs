@@ -15,7 +15,7 @@ use drivers::io::{Io, Pio};
 use network::common::*;
 use network::scheme::*;
 
-use fs::{KScheme, Resource, Url};
+use fs::{KScheme, Resource};
 
 use system::error::Result;
 
@@ -122,12 +122,6 @@ pub struct Rtl8139 {
 
 impl Rtl8139 {
     pub fn new(mut pci: PciConfig) -> Box<Self> {
-        let pci_id = unsafe { pci.read(0x00) };
-        let revision = (unsafe { pci.read(0x08) } & 0xFF) as u8;
-        if pci_id == 0x813910EC && revision < 0x20 {
-            debugln!("Not an 8139C+ compatible chip");
-        }
-
         let base = unsafe { pci.read(0x10) as usize };
         let irq = unsafe { pci.read(0x3C) as u8 & 0xF };
 
@@ -151,6 +145,13 @@ impl Rtl8139 {
 
     unsafe fn init(&mut self) {
         syslog_info!(" + RTL8139 on: {:X}, IRQ: {:X}", self.base, self.irq);
+
+        let pci_id = self.pci.read(0x00);
+        let revision = (self.pci.read(0x08) & 0xFF) as u8;
+
+        if pci_id == 0x813910EC && revision < 0x20 {
+            syslog_info!("   - Not an 8139C+ compatible chip");
+        }
 
         self.pci.flag(4, 4, true); // Bus mastering
 
@@ -192,16 +193,21 @@ impl Rtl8139 {
         let mut capr = (self.port.capr.read() + 16) as usize;
         let cbr = self.port.cbr.read() as usize;
 
-        while capr != cbr {
+        while self.port.cr.read() & CR_BUFE.bits != CR_BUFE.bits {
             let frame_addr = receive_buffer + capr + 4;
-            //let frame_status = ptr::read((receive_buffer + capr) as *const u16) as usize;
+            let frame_status = ptr::read((receive_buffer + capr) as *const u16) as usize;
             let frame_len = ptr::read((receive_buffer + capr + 2) as *const u16) as usize;
 
-            self.inbound.push_back(Vec::from(slice::from_raw_parts(frame_addr as *const u8, frame_len - 4)));
+            //debugln!("RTL8139: CAPR {} CBR {} STATUS {:X} LEN {}", capr, cbr, frame_status, frame_len);
+            if frame_len >= 4 {
+                self.inbound.push_back(Vec::from(slice::from_raw_parts(frame_addr as *const u8, frame_len - 4)));
+            } else {
+                panic!("RTL8139: Empty Packet: CAPR {} CBR {} STATUS {:X} LEN {}", capr, cbr, frame_status, frame_len);
+            }
 
             capr = capr + frame_len + 4;
             capr = (capr + 3) & (0xFFFFFFFF - 3);
-            if capr >= 8192 {
+            if capr >= 8192 + 16 {
                 capr -= 8192
             }
 
@@ -237,7 +243,7 @@ impl KScheme for Rtl8139 {
         "network"
     }
 
-    fn open(&mut self, _: Url, _: usize) -> Result<Box<Resource>> {
+    fn open(&mut self, _: &str, _: usize) -> Result<Box<Resource>> {
         Ok(NetworkResource::new(self))
     }
 

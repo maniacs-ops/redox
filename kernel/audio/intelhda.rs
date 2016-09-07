@@ -8,7 +8,9 @@ use drivers::pci::config::PciConfig;
 
 use common::time;
 
-use fs::{KScheme, Resource, Url};
+use core::cmp;
+
+use fs::{KScheme, Resource};
 
 use syscall;
 use syscall::TimeSpec;
@@ -56,13 +58,11 @@ impl Resource for IntelHdaResource {
     fn path(&self, buf: &mut [u8]) -> syscall::Result <usize> {
         let path = b"audio:";
 
-        let mut i = 0;
-        while i < buf.len() && i < path.len() {
-            buf[i] = path[i];
-            i += 1;
+        for (b, p) in buf.iter_mut().zip(path.iter()) {
+            *b = *p;
         }
 
-        Ok(i)
+        Ok(cmp::min(buf.len(), path.len()))
     }
 
     fn write(&mut self, buf: &[u8]) -> syscall::Result<usize> {
@@ -164,7 +164,7 @@ impl KScheme for IntelHda {
         "hda"
     }
 
-    fn open(&mut self, _: Url, _: usize) -> syscall::Result<Box<Resource>> {
+    fn open(&mut self, _: &str, _: usize) -> syscall::Result<Box<Resource>> {
         Ok(box IntelHdaResource { base: self.base })
     }
 

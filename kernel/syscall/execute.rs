@@ -4,13 +4,15 @@ use alloc::arc::Arc;
 
 use arch::context::{CONTEXT_IMAGE_ADDR, CONTEXT_IMAGE_SIZE, CONTEXT_HEAP_ADDR, CONTEXT_HEAP_SIZE,
                     CONTEXT_MMAP_ADDR, CONTEXT_MMAP_SIZE, CONTEXT_STACK_SIZE, CONTEXT_STACK_ADDR,
+                    CONTEXT_TLS_ADDR,
                     context_switch, context_userspace, Context, ContextMemory, ContextZone};
+use arch::gdt::{GDT_USER_CODE, GDT_USER_DATA, GDT_USER_TLS, GdtEntry};
 use arch::elf::Elf;
 use arch::memory;
 use arch::regs::Regs;
 
 use collections::borrow::ToOwned;
-use collections::string::String;
+use collections::string::{String, ToString};
 use collections::vec::Vec;
 
 use common::slice::GetSlice;
@@ -19,9 +21,8 @@ use core::cell::UnsafeCell;
 use core::ops::DerefMut;
 use core::{mem, ptr, slice, str};
 
-use fs::Url;
-
 use system::error::{Error, Result, ENOEXEC, ENOMEM};
+use system::syscall::O_RDONLY;
 
 pub fn execute_thread(context_ptr: *mut Context, entry: usize, mut args: Vec<String>) -> ! {
     Context::spawn("kexec".into(),
@@ -42,20 +43,10 @@ pub fn execute_thread(context_ptr: *mut Context, entry: usize, mut args: Vec<Str
                 physical_address -= 0x80000000;
             }
 
-            let virtual_address = unsafe { (*context.image.get()).next_mem() };
             let virtual_size = arg.len();
+            let virtual_address = unsafe { (*context.image.get()).add_mem(physical_address, virtual_size, false, true) }.unwrap();
 
             mem::forget(arg);
-
-            unsafe {
-                (*context.image.get()).memory.push(ContextMemory {
-                    physical_address: physical_address,
-                    virtual_address: virtual_address,
-                    virtual_size: virtual_size,
-                    writeable: false,
-                    allocated: true,
-                });
-            }
 
             context_args.push(virtual_address as usize);
             argc += 1;
@@ -75,6 +66,32 @@ pub fn execute_thread(context_ptr: *mut Context, entry: usize, mut args: Vec<Str
             allocated: true,
         });
 
+        unsafe {
+            if let Some(ref mut tls_master) = *context.tls_master.get() {
+                let mut tls = ContextMemory {
+                    physical_address: memory::alloc_aligned(tls_master.virtual_size + 4096, 4096),
+                    virtual_address: CONTEXT_TLS_ADDR,
+                    virtual_size: tls_master.virtual_size + 4096,
+                    writeable: true,
+                    allocated: true
+                };
+
+                tls_master.map();
+                tls.map();
+
+                *(tls.virtual_address as *mut usize) = tls.virtual_address + tls.virtual_size;
+
+                ::memcpy((tls.virtual_address + tls.virtual_size - tls_master.virtual_size) as *mut u8,
+                        tls_master.virtual_address as *const u8,
+                        tls_master.virtual_size);
+
+                tls.unmap();
+                tls_master.unmap();
+
+                context.tls = Some(tls);
+            }
+        }
+
         let user_sp = if let Some(ref stack) = context.stack {
             let mut sp = stack.physical_address + stack.virtual_size - 128;
             for arg in context_args.iter() {
@@ -86,17 +103,19 @@ pub fn execute_thread(context_ptr: *mut Context, entry: usize, mut args: Vec<Str
             0
         };
 
-        unsafe {
-            context.push(0x20 | 3);
-            context.push(user_sp);
-            context.push(1 << 9);
-            context.push(0x18 | 3);
-            context.push(entry);
-            context.push(context_userspace as usize);
-        }
-
         if let Some(vfork) = context.vfork.take() {
             unsafe { (*vfork).unblock("execute_thread vfork") }
+        }
+
+        unsafe {
+            context.push((GDT_USER_TLS * mem::size_of::<GdtEntry>()) | 3);
+            context.push((GDT_USER_DATA * mem::size_of::<GdtEntry>()) | 3);
+            context.push(user_sp);
+            context.push(1 << 9);
+            context.push((GDT_USER_CODE * mem::size_of::<GdtEntry>()) | 3);
+            context.push(entry);
+            context.push(0);
+            context.push(context_userspace as usize);
         }
     });
 
@@ -113,33 +132,28 @@ pub fn execute(mut args: Vec<String>) -> Result<usize> {
     let mut vec: Vec<u8> = Vec::new();
 
     let path = current.canonicalize(args.get(0).map_or("", |p| &p));
-    let url = try!(Url::from_str(&path));
     {
-        let mut resource = try!(url.open());
+        let mut resource = try!(::env().open(&path, O_RDONLY));
 
         // Hack to allow file scheme to find memory in context's memory space
         unsafe {
             let mmap = &mut *current.mmap.get();
 
             let virtual_size = 1024*1024;
-            let virtual_address = mmap.next_mem();
 
             let physical_address = memory::alloc_aligned(virtual_size, 4096);
             if physical_address == 0 {
                 return Err(Error::new(ENOMEM));
             }
 
-            let mut memory = ContextMemory {
-                physical_address: physical_address,
-                virtual_address: virtual_address,
-                virtual_size: virtual_size,
-                writeable: true,
-                allocated: true,
-            };
+            let virtual_address = try!(mmap.add_mem(physical_address, virtual_size, true, true));
 
-            memory.map();
-
-            mmap.memory.push(memory);
+            for i in 0..mmap.memory.len() {
+                if mmap.memory[i].virtual_address == virtual_address {
+                    mmap.memory[i].map();
+                    break;
+                }
+            }
 
             let mut read_loop = || -> Result<usize> {
                 loop {
@@ -154,9 +168,12 @@ pub fn execute(mut args: Vec<String>) -> Result<usize> {
 
             let res = read_loop();
 
-            let mut memory = mmap.memory.pop().unwrap();
-
-            memory.unmap();
+            for i in 0..mmap.memory.len() {
+                if mmap.memory[i].virtual_address == virtual_address {
+                    mmap.memory.remove(i).unmap();
+                    break;
+                }
+            }
 
             try!(res);
         }
@@ -164,7 +181,7 @@ pub fn execute(mut args: Vec<String>) -> Result<usize> {
 
     if vec.starts_with(b"#!") {
         if let Some(mut arg) = args.get_mut(0) {
-            *arg = url.to_string();
+            *arg = path.to_string();
         }
 
         let line = unsafe { str::from_utf8_unchecked(&vec[2..]) }.lines().next().unwrap_or("");
@@ -183,12 +200,12 @@ pub fn execute(mut args: Vec<String>) -> Result<usize> {
         match Elf::from(&vec) {
             Ok(executable) => {
                 let entry = unsafe { executable.entry() };
-                let segments = unsafe { executable.load_segment() };
+                let segments = unsafe { executable.load_segments() };
 
                 if entry > 0 && ! segments.is_empty() {
                     unsafe { current.unmap() };
 
-                    current.name = url.to_string().into();
+                    current.name = path.to_string().into();
                     current.cwd = Arc::new(UnsafeCell::new(unsafe { (*current.cwd.get()).clone() }));
 
                     current.image = Arc::new(UnsafeCell::new(ContextZone::new(CONTEXT_IMAGE_ADDR, CONTEXT_IMAGE_SIZE)));
@@ -200,8 +217,8 @@ pub fn execute(mut args: Vec<String>) -> Result<usize> {
                         let image = unsafe { &mut *current.image.get() };
 
                         for segment in segments.iter() {
-                            let virtual_address = segment.vaddr as usize;
-                            let virtual_size = segment.mem_len as usize;
+                            let virtual_address = segment.p_vaddr as usize;
+                            let virtual_size = segment.p_memsz as usize;
 
                             let offset = virtual_address % 4096;
 
@@ -224,15 +241,19 @@ pub fn execute(mut args: Vec<String>) -> Result<usize> {
                             // Copy progbits
                             unsafe {
                                 ::memcpy(virtual_address as *mut u8,
-                                        executable.data.as_ptr().offset(segment.off as isize),
-                                        segment.file_len as usize)
+                                        executable.data.as_ptr().offset(segment.p_offset as isize),
+                                        segment.p_filesz as usize)
                             };
 
                             unsafe { memory.unmap() };
 
-                            memory.writeable = segment.flags & 2 == 2;
+                            memory.writeable = segment.p_flags & 2 == 2;
 
-                            image.memory.push(memory);
+                            if segment.p_type == 1 {
+                                image.memory.push(memory);
+                            } else if segment.p_type == 7 {
+                                unsafe { *current.tls_master.get() = Some(memory) };
+                            }
                         }
                     }
 
@@ -246,7 +267,7 @@ pub fn execute(mut args: Vec<String>) -> Result<usize> {
                 }
             },
             Err(msg) => {
-                debugln!("execute: failed to exec '{:?}': {}", url, msg);
+                debugln!("execute: failed to exec '{:?}': {}", path, msg);
                 Err(Error::new(ENOEXEC))
             }
         }

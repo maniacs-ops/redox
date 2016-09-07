@@ -78,7 +78,9 @@ long_mode:
     ;rust init
     mov eax, [kernel_base + 0x18]
     mov [interrupts.handler], rax
-    mov rax, tss
+    mov rax, gdtr
+    mov rbx, idtr
+    mov rcx, tss
     int 0xFF
 .lp:
     sti
@@ -125,6 +127,17 @@ long_mode:
     iend
 
     .user_data equ $ - gdt
+    istruc GDTEntry
+        at GDTEntry.limitl, dw 0
+        at GDTEntry.basel, dw 0
+        at GDTEntry.basem, db 0
+    ; AMD System Programming Manual states that the writeable bit is ignored in long mode, but ss can not be set to this descriptor without it
+        at GDTEntry.attribute, db attrib.present | attrib.ring3 | attrib.user | attrib.writable
+        at GDTEntry.flags__limith, db 0
+        at GDTEntry.baseh, db 0
+    iend
+
+    .user_tls equ $ - gdt
     istruc GDTEntry
         at GDTEntry.limitl, dw 0
         at GDTEntry.basel, dw 0

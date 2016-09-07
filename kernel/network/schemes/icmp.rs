@@ -8,7 +8,9 @@ use arch::context::context_switch;
 
 use network::common::*;
 
-use fs::{KScheme, Url};
+use fs::KScheme;
+
+use system::syscall::O_RDWR;
 
 #[derive(Copy, Clone)]
 #[repr(packed)]
@@ -25,7 +27,7 @@ pub struct Icmp {
 }
 
 impl FromBytes for Icmp {
-    fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() >= mem::size_of::<IcmpHeader>() {
             unsafe {
                 return Some(Icmp {
@@ -60,11 +62,11 @@ impl KScheme for IcmpScheme {
 
 impl IcmpScheme {
     pub fn reply_loop() {
-        while let Ok(mut ip) = Url::from_str("ip:/1").unwrap().open() {
+        while let Ok(mut ip) = ::env().open("ip:/1", O_RDWR) {
             loop {
                 let mut bytes = [0; 65536];
                 if let Ok(count) = ip.read(&mut bytes) {
-                    if let Some(message) = Icmp::from_bytes(bytes[.. count].to_vec()) {
+                    if let Some(message) = Icmp::from_bytes(&bytes[..count]) {
                         if message.header._type == 0x08 {
                             let mut response = Icmp {
                                 header: message.header,

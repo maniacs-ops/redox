@@ -8,7 +8,9 @@ use arch::context::context_switch;
 
 use network::common::*;
 
-use fs::{KScheme, Url};
+use fs::KScheme;
+
+use system::syscall::O_RDWR;
 
 #[derive(Copy, Clone)]
 #[repr(packed)]
@@ -30,7 +32,7 @@ pub struct Arp {
 }
 
 impl FromBytes for Arp {
-    fn from_bytes(bytes: Vec<u8>) -> Option<Self> {
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() >= mem::size_of::<ArpHeader>() {
             unsafe {
                 return Some(Arp {
@@ -65,11 +67,11 @@ impl KScheme for ArpScheme {
 
 impl ArpScheme {
     pub fn reply_loop() {
-        while let Ok(mut link) = Url::from_str("ethernet:/806").unwrap().open() {
+        while let Ok(mut link) = ::env().open("ethernet:/806", O_RDWR) {
             loop {
                 let mut bytes = [0; 65536];
                 if let Ok(count) = link.read(&mut bytes) {
-                    if let Some(packet) = Arp::from_bytes(bytes[.. count].to_vec()) {
+                    if let Some(packet) = Arp::from_bytes(&bytes[..count]) {
                         if packet.header.oper.get() == 1 && packet.header.dst_ip.equals(unsafe { IP_ADDR }) {
                             let mut response = Arp {
                                 header: packet.header,

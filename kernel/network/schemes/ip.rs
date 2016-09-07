@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 
-use collections::string::ToString;
 use collections::vec::Vec;
 
 use core::{cmp, mem};
@@ -12,9 +11,10 @@ use common::random;
 use common::to_num::ToNum;
 
 use super::arp::{Arp, ArpHeader};
-use fs::{KScheme, Resource, Url};
+use fs::{KScheme, Resource};
 
 use system::error::{Error, Result, ENOENT};
+use system::syscall::O_RDWR;
 
 /// A IP (internet protocole) resource
 pub struct IpResource {
@@ -66,7 +66,7 @@ impl Resource for IpResource {
             let mut bytes = [0; 65536];
             let count = try!(self.link.read(&mut bytes));
 
-            if let Some(packet) = Ipv4::from_bytes(bytes[.. count].to_vec()) {
+            if let Some(packet) = Ipv4::from_bytes(&bytes[..count]) {
                 if packet.header.proto == self.proto &&
                    (packet.header.dst.equals(unsafe { IP_ADDR }) || packet.header.dst.equals(BROADCAST_IP_ADDR)) &&
                    (packet.header.src.equals(self.peer_addr) || self.peer_addr.equals(BROADCAST_IP_ADDR)) {
@@ -135,14 +135,14 @@ impl KScheme for IpScheme {
         "ip"
     }
 
-    fn open(&mut self, url: Url, _: usize) -> Result<Box<Resource>> {
-        let parts: Vec<&str> = url.reference().split('/').collect();
+    fn open(&mut self, url: &str, _: usize) -> Result<Box<Resource>> {
+        let parts: Vec<&str> = url.splitn(2, ":").nth(1).unwrap_or("").split('/').collect();
         if let Some(host_string) = parts.get(0) {
             if let Some(proto_string) = parts.get(1) {
                 let proto = proto_string.to_num_radix(16) as u8;
 
                 if ! host_string.is_empty() {
-                    let peer_addr = Ipv4Addr::from_string(&host_string.to_string());
+                    let peer_addr = Ipv4Addr::from_str(host_string);
                     let mut route_mac = BROADCAST_MAC_ADDR;
 
                     if ! peer_addr.equals(BROADCAST_IP_ADDR) {
@@ -172,7 +172,7 @@ impl KScheme for IpScheme {
                         }
 
                         if route_mac.equals(BROADCAST_MAC_ADDR) {
-                            if let Ok(mut link) = Url::from_str(&format!("ethernet:{}/806", &route_mac.to_string())).unwrap().open() {
+                            if let Ok(mut link) = ::env().open(&format!("ethernet:{}/806", &route_mac.to_string()), O_RDWR) {
                                 let arp = Arp {
                                     header: ArpHeader {
                                         htype: n16::new(1),
@@ -192,7 +192,7 @@ impl KScheme for IpScheme {
                                     Ok(_) => loop {
                                         let mut bytes = [0; 65536];
                                         match link.read(&mut bytes) {
-                                            Ok(count) => if let Some(packet) = Arp::from_bytes(bytes[.. count].to_vec()) {
+                                            Ok(count) => if let Some(packet) = Arp::from_bytes(&bytes[..count]) {
                                                 if packet.header.oper.get() == 2 &&
                                                    packet.header.src_ip.equals(route_addr) {
                                                     route_mac = packet.header.src_mac;
@@ -212,7 +212,7 @@ impl KScheme for IpScheme {
                         }
                     }
 
-                    if let Ok(link) = Url::from_str(&format!("ethernet:{}/800", &route_mac.to_string())).unwrap().open(){
+                    if let Ok(link) = ::env().open(&format!("ethernet:{}/800", &route_mac.to_string()), O_RDWR) {
                         return Ok(box IpResource {
                             link: link,
                             data: Vec::new(),
@@ -222,11 +222,11 @@ impl KScheme for IpScheme {
                         });
                     }
                 } else {
-                    while let Ok(mut link) = Url::from_str("ethernet:/800").unwrap().open() {
+                    while let Ok(mut link) = ::env().open("ethernet:/800", O_RDWR) {
                         let mut bytes = [0; 65536];
                         match link.read(&mut bytes) {
                             Ok(count) => {
-                                if let Some(packet) = Ipv4::from_bytes(bytes[.. count].to_vec()) {
+                                if let Some(packet) = Ipv4::from_bytes(&bytes[..count]) {
                                     if packet.header.proto == proto &&
                                        (packet.header.dst.equals(unsafe { IP_ADDR }) || packet.header.dst.equals(BROADCAST_IP_ADDR)) {
                                         return Ok(box IpResource {

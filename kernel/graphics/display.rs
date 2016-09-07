@@ -112,15 +112,23 @@ impl Display {
         }
     }
 
+    pub fn flip_rows(&self, row: usize, count: usize){
+        unsafe {
+            let offset = row * self.width;
+            let size = count * self.width;
+            fast_copy(self.onscreen.offset(offset as isize), self.offscreen.offset(offset as isize), size);
+        }
+    }
+
     /// Draw a rectangle
     pub fn rect(&self, x: usize, y: usize, w: usize, h: usize, color: Color) {
         let data = color.data;
 
         let start_y = cmp::min(self.height - 1, y);
-        let end_y = cmp::min(self.height - 1, y + h);
+        let end_y = cmp::min(self.height, y + h);
 
         let start_x = cmp::min(self.width - 1, x);
-        let len = cmp::min(self.width - 1, x + w) - start_x;
+        let len = cmp::min(self.width, x + w) - start_x;
 
         for y in start_y..end_y {
             unsafe {
@@ -136,14 +144,16 @@ impl Display {
             let mut dst = unsafe { self.offscreen.offset((y * self.width + x) as isize) };
 
             let font_i = 16 * (character as usize);
-            for row in 0..16 {
-                let row_data = FONT[font_i + row];
-                for col in 0..8 {
-                    if (row_data >> (7 - col)) & 1 == 1 {
-                        unsafe { *dst.offset(col) = data; }
+            if font_i + 16 <= FONT.len() {
+                for row in 0..16 {
+                    let row_data = FONT[font_i + row];
+                    for col in 0..8 {
+                        if (row_data >> (7 - col)) & 1 == 1 {
+                            unsafe { *dst.offset(col) = data; }
+                        }
                     }
+                    dst = unsafe { dst.offset(self.width as isize) };
                 }
-                dst = unsafe { dst.offset(self.width as isize) };
             }
         }
     }

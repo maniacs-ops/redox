@@ -15,7 +15,6 @@ startup_arch:
 
 USE32
 protected_mode:
-
     ; load all the other segments with 32 bit data segments
     mov eax, gdt.kernel_data
     mov ds, eax
@@ -32,7 +31,9 @@ protected_mode:
     ;rust init
     mov eax, [kernel_base + 0x18]
     mov [interrupts.handler], eax
-    mov eax, tss
+    mov eax, gdtr
+    mov ebx, idtr
+    mov ecx, tss
     int 255
 .lp:
     sti
@@ -78,6 +79,16 @@ gdt:
     iend
 
 .user_data equ $ - gdt
+    istruc GDTEntry
+        at GDTEntry.limitl, dw 0xFFFF
+        at GDTEntry.basel, dw 0
+        at GDTEntry.basem, db 0
+        at GDTEntry.attribute, db attrib.present | attrib.ring3 | attrib.user | attrib.writable
+        at GDTEntry.flags__limith, db 0xFF | flags.granularity | flags.default_operand_size
+        at GDTEntry.baseh, db 0
+    iend
+
+.user_tls equ $ - gdt
     istruc GDTEntry
         at GDTEntry.limitl, dw 0xFFFF
         at GDTEntry.basel, dw 0
